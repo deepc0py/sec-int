@@ -71,8 +71,8 @@ Follow these steps to set up and run the project locally.
 
 ### 1\. Prerequisites
 
-  * Python 3.12+ [3]
-  * Poetry
+  * Python 3.12+
+  * Poetry ([installation guide](https://python-poetry.org/docs/#installation))
   * Docker and Docker Compose
   * An OpenAI API Key
 
@@ -80,32 +80,10 @@ Follow these steps to set up and run the project locally.
 
 ```bash
 git clone <your-repository-url>
-cd <repository-name>
+cd pyramid
 ```
 
-### 3\. Configure Environment Variables
-
-Create a `.env` file by copying the example file.
-
-```bash
-cp.env.example.env
-```
-
-Now, edit the `.env` file and add your credentials and configuration:
-
-```dotenv
-#.env
-OPENAI_API_KEY="sk-..."
-LLM_MODEL_NAME="gpt-4o"
-
-# Database Configuration
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=postgres
-POSTGRES_DB=vuln_rag_db
-DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:54320/vuln_rag_db"
-```
-
-### 4\. Install Dependencies
+### 3\. Install Dependencies
 
 Install the required Python packages using Poetry.
 
@@ -113,15 +91,54 @@ Install the required Python packages using Poetry.
 poetry install
 ```
 
+### 4\. Configure Environment Variables
+
+Create a `.env` file by copying the example file.
+
+```bash
+cp .env.example .env
+```
+
+Now, edit the `.env` file and add your credentials and configuration:
+
+```dotenv
+# Application
+APP_ENV=dev
+LOG_LEVEL=INFO
+
+# Database (asyncpg URL)
+DATABASE_URL=postgresql+asyncpg://rag_user:rag_pass@localhost:54320/rag_db
+
+# OpenAI
+OPENAI_API_KEY=sk-***
+LLM_MODEL_NAME=gpt-4o
+```
+
 ### 5\. Start the Database
 
 Launch the PostgreSQL + `pgvector` database using Docker Compose. This will also create a persistent volume to store the data.
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-### 6\. Populate the Knowledge Base
+### 6\. Verify Setup
+
+Test that everything is working:
+
+```bash
+# Run smoke test
+poetry run python -m app.hello
+
+# Run tests
+poetry run pytest
+
+# Check code quality
+poetry run ruff check
+poetry run mypy src/
+```
+
+### 7\. Populate the Knowledge Base
 
 Run the ingestion and embedding script. This will fetch the OWASP and MITRE data, process it, generate embeddings, and populate the database.
 
