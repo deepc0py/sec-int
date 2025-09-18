@@ -138,15 +138,48 @@ poetry run ruff check
 poetry run mypy src/
 ```
 
-### 7\. Populate the Knowledge Base
+### 7\. Ingest Knowledge Base Data
 
-Run the ingestion and embedding script. This will fetch the OWASP and MITRE data, process it, generate embeddings, and populate the database.
+#### MITRE ATT&CK Data (Available Now)
 
-**Note:** This script will make a few hundred calls to the OpenAI embeddings API and may incur costs.
+Extract MITRE ATT&CK Enterprise techniques and sub-techniques:
 
 ```bash
+# Test ingestion (dry run)
+poetry run python -m app.ingestion.ingest_mitre --dry-run
+
+# Extract data to default location
+poetry run python -m app.ingestion.ingest_mitre
+
+# Extract to custom location
+poetry run python -m app.ingestion.ingest_mitre --output /path/to/mitre.jsonl
+```
+
+#### OWASP Top 10 Data (Available Now)
+
+Extract OWASP Top 10 2021 vulnerabilities:
+
+```bash
+# Test ingestion (dry run)
+poetry run python -m app.ingestion.ingest_owasp --dry-run
+
+# Extract data to default location
+poetry run python -m app.ingestion.ingest_owasp
+
+# Extract to custom location
+poetry run python -m app.ingestion.ingest_owasp --output /path/to/owasp.jsonl
+```
+
+#### Full Knowledge Base Population (Coming Soon)
+
+The complete ingestion and embedding pipeline is under development:
+
+```bash
+# Future: Run full ingestion and embedding script
 poetry run python scripts/populate_db.py
 ```
+
+**Note:** The embedding script will make hundreds of calls to the OpenAI API and may incur costs.
 
 ## Usage
 

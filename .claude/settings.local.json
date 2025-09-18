@@ -4,7 +4,10 @@
       "Bash(poetry install:*)",
       "Bash(poetry run:*)",
       "Bash(docker compose:*)",
-      "Bash(psql:*)"
+      "Bash(psql:*)",
+      "Bash(poetry lock:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:owasp.org)"
     ],
     "deny": [],
     "ask": []

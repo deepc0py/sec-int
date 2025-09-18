@@ -16,6 +16,9 @@ psycopg2-binary = "^2.9"
 mitreattack-python = "^2.0"
 markdown-it-py = "^3.0"
 pydantic-settings = "^2.2"
+click = "^8.1"
+setuptools = "^70.0"
+beautifulsoup4 = "^4.12"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2"
