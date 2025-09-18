@@ -170,10 +170,176 @@ poetry run pytest tests/test_ingest_owasp.py -v
 
 The tests cover data structure validation and title extraction functionality.
 
+## Text Chunking
+
+### Overview
+
+The text chunking service (`src/app/ingestion/chunking.py`) splits vulnerability documents into semantically coherent chunks while preserving context through overlapping windows. This prepares the data for embedding generation and vector storage.
+
+### Usage
+
+```bash
+# Dry run to see chunking output
+poetry run python -m app.ingestion.chunking --input-file data/raw/owasp.jsonl --dry-run
+
+# Chunk OWASP data with custom settings
+poetry run python -m app.ingestion.chunking \
+  --input-file data/raw/owasp.jsonl \
+  --output-file data/raw/owasp_chunked.jsonl \
+  --max-tokens 256 \
+  --overlap-tokens 25
+
+# Chunk MITRE data
+poetry run python -m app.ingestion.chunking \
+  --input-file data/raw/mitre.jsonl \
+  --output-file data/raw/mitre_chunked.jsonl \
+  --max-tokens 512 \
+  --overlap-tokens 50
+```
+
+### Chunking Strategy
+
+The chunker uses a recursive approach with prioritized separators:
+
+1. **Paragraph breaks** (`\n\n`) - Preferred for semantic coherence
+2. **Sentence endings** (`. `, `! `, `? `) - Maintains logical units
+3. **Word boundaries** (` `) - Fallback for smaller chunks
+4. **Character level** - Last resort for very long strings
+
+### Chunk Structure
+
+Each chunk includes comprehensive metadata:
+
+```json
+{
+  "content": "Access control enforces policy such that users cannot act...",
+  "vulnerability_id": "A01:2021",
+  "title": "Broken Access Control",
+  "source": "owasp",
+  "url": "https://owasp.org/Top10/A01_2021-Broken_Access_Control/",
+  "order_index": 0,
+  "token_count": 45,
+  "overlap_pre": false,
+  "overlap_post": true
+}
+```
+
+### Expected Results
+
+- **OWASP**: 10 vulnerabilities → ~120-130 chunks
+- **MITRE**: 679 techniques → ~780-800 chunks
+- **Average chunk size**: 900-1200 characters
+- **Expansion ratio**: 1.02-1.10x (due to overlap)
+
+## Embedding and Vector Storage
+
+### Overview
+
+The vector population service (`src/app/ingestion/populate_db.py`) generates embeddings for vulnerability chunks using OpenAI's `text-embedding-3-small` model and stores them in PostgreSQL with pgvector for semantic similarity search.
+
+### Usage
+
+```bash
+# Dry run to see what would be processed
+poetry run python -m app.ingestion.populate_db \
+  --input-file data/raw/owasp_chunked.jsonl \
+  --dry-run \
+  --limit 5
+
+# Populate vector store with OWASP chunks
+poetry run python -m app.ingestion.populate_db \
+  --input-file data/raw/owasp_chunked.jsonl \
+  --batch-size 32
+
+# Populate with MITRE chunks (rebuild entire database)
+poetry run python -m app.ingestion.populate_db \
+  --input-file data/raw/mitre_chunked.jsonl \
+  --rebuild \
+  --batch-size 64
+
+# Test similarity search after population
+poetry run python -m app.ingestion.populate_db \
+  --input-file data/raw/owasp_chunked.jsonl \
+  --test-query "SQL injection prevention" \
+  --limit 10
+```
+
+### Database Schema
+
+The service automatically creates the required schema:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS vulnerability_knowledge (
+    id SERIAL PRIMARY KEY,
+    content TEXT NOT NULL,
+    embedding VECTOR(1536) NOT NULL,
+    source VARCHAR(10) NOT NULL,
+    vulnerability_id VARCHAR(20) NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT,
+    order_index INT NOT NULL DEFAULT 0,
+    content_hash TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for efficient querying
+CREATE INDEX IF NOT EXISTS ix_vuln_knowledge_source ON vulnerability_knowledge(source);
+CREATE INDEX IF NOT EXISTS ix_vuln_knowledge_vuln ON vulnerability_knowledge(vulnerability_id);
+CREATE INDEX IF NOT EXISTS ix_vuln_knowledge_hash ON vulnerability_knowledge(content_hash);
+```
+
+### Key Features
+
+- **Idempotent Operations**: Content hashing prevents duplicate insertions
+- **Batch Processing**: Configurable batch sizes for optimal performance
+- **Rate Limiting**: Respects OpenAI API limits with proper batching
+- **Error Handling**: Exponential backoff for transient failures
+- **Similarity Testing**: Built-in similarity search validation
+
+### Expected Performance
+
+- **Embedding Model**: text-embedding-3-small (1536 dimensions)
+- **Processing Speed**: ~50-100 chunks per minute (API dependent)
+- **Storage Efficiency**: ~6KB per chunk (text + embedding + metadata)
+- **Total Storage**: ~5-10MB for complete MITRE + OWASP dataset
+
+### Testing
+
+Run the comprehensive test suite:
+
+```bash
+poetry run pytest tests/test_populate_db.py -v
+```
+
+Tests cover embedding generation, vector storage, batch processing, and idempotency.
+
+## Complete Pipeline
+
+To process data from ingestion to vector storage:
+
+```bash
+# 1. Ingest raw data
+poetry run python -m app.ingestion.ingest_mitre
+poetry run python -m app.ingestion.ingest_owasp
+
+# 2. Chunk the data
+poetry run python -m app.ingestion.chunking --input-file data/raw/mitre.jsonl --output-file data/raw/mitre_chunked.jsonl
+poetry run python -m app.ingestion.chunking --input-file data/raw/owasp.jsonl --output-file data/raw/owasp_chunked.jsonl
+
+# 3. Populate vector store
+poetry run python -m app.ingestion.populate_db --input-file data/raw/mitre_chunked.jsonl --rebuild
+poetry run python -m app.ingestion.populate_db --input-file data/raw/owasp_chunked.jsonl
+
+# 4. Test the system
+poetry run python -m app.ingestion.populate_db --input-file data/raw/owasp_chunked.jsonl --test-query "broken authentication" --dry-run
+```
+
 ## Next Steps
 
-After MITRE and OWASP ingestion, the extracted data will be:
+The populated vector store is now ready for:
 
-1. **Chunked** (Ticket 2.3) - Split into smaller, semantically coherent pieces
-2. **Embedded** (Ticket 2.4) - Converted to vector embeddings via OpenAI API
-3. **Stored** (Ticket 2.4) - Inserted into PostgreSQL with pgvector for retrieval
+1. **RAG Agent Development** (Epic 3) - Query interface and context retrieval
+2. **Vulnerability Analysis** (Epic 4) - Scan processing and report generation
+3. **API Deployment** (Epic 6) - Production-ready endpoints
