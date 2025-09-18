@@ -152,7 +152,7 @@ class VectorStore:
 
             batch_data.append((
                 chunk["content"],
-                embedding,
+                str(embedding),  # Convert embedding list to string for PostgreSQL vector type
                 chunk["source"],
                 chunk["vulnerability_id"],
                 chunk["title"],
