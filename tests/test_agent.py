@@ -80,7 +80,7 @@ class TestCreateAgentDependencies:
 
     @pytest.mark.asyncio
     @patch('app.agent.get_settings')
-    @patch('asyncpg.create_pool')
+    @patch('app.agent.asyncpg.create_pool', new_callable=AsyncMock)
     @patch('app.agent.AsyncOpenAI')
     async def test_create_dependencies_success(self, mock_openai, mock_create_pool, mock_get_settings):
         """Test successfully creating agent dependencies."""
@@ -93,6 +93,7 @@ class TestCreateAgentDependencies:
         # Mock database pool
         mock_pool = AsyncMock()
         mock_pool.__class__.__name__ = "Pool"
+        # Make create_pool async and return the pool
         mock_create_pool.return_value = mock_pool
 
         # Mock OpenAI client
@@ -143,7 +144,7 @@ class TestCreateAgentDependencies:
 
     @pytest.mark.asyncio
     @patch('app.agent.get_settings')
-    @patch('asyncpg.create_pool')
+    @patch('app.agent.asyncpg.create_pool', new_callable=AsyncMock)
     async def test_create_dependencies_database_connection_fail(self, mock_create_pool, mock_get_settings):
         """Test handling database connection failure."""
         mock_settings = Mock()
@@ -159,7 +160,7 @@ class TestCreateAgentDependencies:
 
     @pytest.mark.asyncio
     @patch('app.agent.get_settings')
-    @patch('asyncpg.create_pool')
+    @patch('app.agent.asyncpg.create_pool', new_callable=AsyncMock)
     async def test_create_dependencies_pool_is_none(self, mock_create_pool, mock_get_settings):
         """Test handling when pool creation returns None."""
         mock_settings = Mock()
@@ -179,7 +180,7 @@ class TestCreateAgentDependencies:
         custom_db_url = "postgresql://custom:custom@localhost/custom"
         custom_api_key = "sk-custom-key"
 
-        with patch('asyncpg.create_pool') as mock_create_pool, \
+        with patch('app.agent.asyncpg.create_pool', new_callable=AsyncMock) as mock_create_pool, \
              patch('app.agent.AsyncOpenAI') as mock_openai:
 
             # Mock successful creation
@@ -276,7 +277,12 @@ class TestTestAgentDependencies:
         mock_pool = AsyncMock()
         mock_conn = AsyncMock()
         mock_conn.fetchval.return_value = "PostgreSQL 15.0"
-        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        # Create a proper async context manager for acquire()
+        mock_acquire_cm = AsyncMock()
+        mock_acquire_cm.__aenter__.return_value = mock_conn
+        mock_acquire_cm.__aexit__.return_value = None
+        mock_pool.acquire.return_value = mock_acquire_cm
 
         mock_models_list = Mock()
         mock_models_list.data = [Mock(), Mock(), Mock()]  # 3 models
@@ -299,7 +305,10 @@ class TestTestAgentDependencies:
         """Test when database connection fails."""
         # Mock failing database
         mock_pool = AsyncMock()
-        mock_pool.acquire.side_effect = Exception("Database connection failed")
+        # Make acquire() fail
+        mock_acquire_cm = AsyncMock()
+        mock_acquire_cm.__aenter__.side_effect = Exception("Database connection failed")
+        mock_pool.acquire.return_value = mock_acquire_cm
 
         mock_oai = AsyncMock()
         mock_oai.models.list.return_value = Mock(data=[])
@@ -320,7 +329,12 @@ class TestTestAgentDependencies:
         mock_pool = AsyncMock()
         mock_conn = AsyncMock()
         mock_conn.fetchval.return_value = "PostgreSQL 15.0"
-        mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+        # Create proper async context manager
+        mock_acquire_cm = AsyncMock()
+        mock_acquire_cm.__aenter__.return_value = mock_conn
+        mock_acquire_cm.__aexit__.return_value = None
+        mock_pool.acquire.return_value = mock_acquire_cm
 
         # Mock failing OpenAI
         mock_oai = AsyncMock()
@@ -340,7 +354,10 @@ class TestTestAgentDependencies:
         """Test when both dependencies fail."""
         # Mock failing dependencies
         mock_pool = AsyncMock()
-        mock_pool.acquire.side_effect = Exception("DB error")
+        # Make acquire() fail
+        mock_acquire_cm = AsyncMock()
+        mock_acquire_cm.__aenter__.side_effect = Exception("DB error")
+        mock_pool.acquire.return_value = mock_acquire_cm
 
         mock_oai = AsyncMock()
         mock_oai.models.list.side_effect = Exception("OpenAI error")

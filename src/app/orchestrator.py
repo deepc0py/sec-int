@@ -4,11 +4,15 @@ This module coordinates the complete analysis pipeline from vulnerability identi
 through knowledge retrieval to final structured analysis output.
 """
 
+import asyncio
 import logging
-from typing import List
+import time
+from typing import Dict, List, Optional, Union
 
 from app.agent import AgentDependencies, get_agent
+from app.ingest_input import handle_scan_input
 from app.models import AnalysisRequest, AnalyzedVulnerability, VulnerabilityFinding
+from app.parser import extract_vulnerability_ids
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +142,124 @@ prevention strategies, and detection methods."""
         except Exception as e:
             logger.error(f"Chat analysis failed: {e}")
             raise
+
+    async def analyze_scan_report(
+        self,
+        raw: Union[str, dict],
+        max_concurrent: int = 5,
+        timeout_per_analysis: float = 30.0
+    ) -> List[AnalyzedVulnerability]:
+        """Analyze a complete scan report by extracting and processing all vulnerability IDs.
+
+        This is the main orchestration function that implements the full pipeline:
+        1. Normalize the input (handle JSON/text)
+        2. Extract vulnerability IDs using the parser
+        3. Analyze each unique vulnerability with concurrency control
+        4. Return results, handling failures gracefully
+
+        Args:
+            raw: Raw scan output as string or dictionary
+            max_concurrent: Maximum number of concurrent analyses (default: 5)
+            timeout_per_analysis: Timeout in seconds for each analysis (default: 30)
+
+        Returns:
+            List of analyzed vulnerabilities in order of extraction
+        """
+        start_time = time.time()
+        logger.info("Starting scan report analysis")
+
+        # Step 1: Normalize the input
+        try:
+            normalized_text = handle_scan_input(raw)
+            logger.debug(f"Normalized {len(normalized_text)} characters of input")
+        except Exception as e:
+            logger.error(f"Failed to normalize input: {e}")
+            raise
+
+        # Step 2: Extract vulnerability IDs
+        findings = extract_vulnerability_ids(normalized_text)
+        logger.info(f"Extracted {len(findings)} unique vulnerability IDs")
+
+        if not findings:
+            logger.warning("No vulnerability IDs found in input")
+            return []
+
+        # Step 3: Analyze each vulnerability with concurrency control
+        results: List[AnalyzedVulnerability] = []
+        errors: List[Dict[str, str]] = []
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def analyze_with_timeout(finding: VulnerabilityFinding, index: int):
+            """Analyze a single vulnerability with timeout and error handling."""
+            async with semaphore:
+                vuln_id = finding.id
+                logger.debug(f"Analyzing vulnerability {index+1}/{len(findings)}: {vuln_id}")
+
+                try:
+                    # Apply timeout to individual analysis
+                    analysis = await asyncio.wait_for(
+                        self.analyze_vulnerability(vuln_id),
+                        timeout=timeout_per_analysis
+                    )
+                    return (index, analysis, None)
+
+                except asyncio.TimeoutError:
+                    error_msg = f"Analysis timeout for {vuln_id} after {timeout_per_analysis}s"
+                    logger.warning(error_msg)
+                    return (index, None, {"id": vuln_id, "error": error_msg})
+
+                except Exception as e:
+                    error_msg = f"Analysis failed for {vuln_id}: {str(e)}"
+                    logger.error(error_msg)
+                    return (index, None, {"id": vuln_id, "error": error_msg})
+
+        # Create tasks for all findings
+        tasks = [
+            analyze_with_timeout(finding, i)
+            for i, finding in enumerate(findings)
+        ]
+
+        # Execute all tasks concurrently
+        task_results = await asyncio.gather(*tasks)
+
+        # Sort results by original index to preserve extraction order
+        task_results.sort(key=lambda x: x[0])
+
+        # Collect successful results and errors
+        for index, analysis, error in task_results:
+            if analysis:
+                results.append(analysis)
+            if error:
+                errors.append(error)
+
+        # Log summary
+        elapsed_time = time.time() - start_time
+        logger.info(
+            f"Scan report analysis completed in {elapsed_time:.2f}s: "
+            f"{len(results)}/{len(findings)} successful, {len(errors)} failed"
+        )
+
+        if errors:
+            logger.warning(f"Failed analyses: {errors}")
+
+        return results
+
+
+# Convenience function for direct use
+async def analyze_scan_report(
+    raw: Union[str, dict],
+    dependencies: AgentDependencies,
+    **kwargs
+) -> List[AnalyzedVulnerability]:
+    """Convenience function to analyze a scan report without instantiating the orchestrator.
+
+    Args:
+        raw: Raw scan output as string or dictionary
+        dependencies: Configured agent dependencies
+        **kwargs: Additional arguments passed to orchestrator.analyze_scan_report()
+
+    Returns:
+        List of analyzed vulnerabilities
+    """
+    orchestrator = VulnerabilityAnalysisOrchestrator(dependencies)
+    return await orchestrator.analyze_scan_report(raw, **kwargs)

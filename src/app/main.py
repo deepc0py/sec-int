@@ -1,16 +1,15 @@
-"""FastAPI application for the Vulnerability Analysis RAG Bot.
+"""FastAPI application with simple dependency injection."""
 
-This module provides the web API interface for vulnerability analysis,
-allowing users to submit vulnerability IDs and receive comprehensive analysis.
-"""
-
+import json
 import logging
 from contextlib import asynccontextmanager
+from typing import List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Body, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent import create_agent_dependencies, cleanup_agent_dependencies, get_agent
+from app.config import get_settings
+from app.dependencies import get_app_dependencies, get_agent_dependencies
 from app.models import AnalysisRequest, AnalyzedVulnerability
 from app.orchestrator import VulnerabilityAnalysisOrchestrator
 
@@ -18,30 +17,27 @@ from app.orchestrator import VulnerabilityAnalysisOrchestrator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global dependencies - will be initialized in lifespan
-agent_deps = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown."""
-    global agent_deps
-
     try:
-        # Startup: Initialize agent dependencies
-        logger.info("Initializing agent dependencies...")
-        agent_deps = await create_agent_dependencies()
-        logger.info("Agent dependencies initialized successfully")
+        # Startup: Initialize dependencies
+        logger.info("Initializing application dependencies...")
+        settings = get_settings()
+        app_deps = await get_app_dependencies()
+        await app_deps.initialize(settings)
+        logger.info("Application dependencies initialized successfully")
         yield
     except Exception as e:
-        logger.error(f"Failed to initialize agent dependencies: {e}")
+        logger.error(f"Failed to initialize dependencies: {e}")
         raise
     finally:
-        # Shutdown: Cleanup agent dependencies
-        if agent_deps:
-            logger.info("Cleaning up agent dependencies...")
-            await cleanup_agent_dependencies(agent_deps)
-            logger.info("Agent dependencies cleaned up")
+        # Shutdown: Cleanup dependencies
+        logger.info("Cleaning up application dependencies...")
+        app_deps = await get_app_dependencies()
+        await app_deps.cleanup()
+        logger.info("Application dependencies cleaned up")
 
 
 # Create FastAPI application
@@ -75,22 +71,23 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    if agent_deps is None:
-        raise HTTPException(status_code=503, detail="Agent dependencies not initialized")
+    # Try to get dependencies to verify they're initialized
+    try:
+        app_deps = await get_app_dependencies()
+        if app_deps._initialized:
+            return {"status": "healthy", "dependencies": "ready"}
+    except Exception:
+        pass
 
-    return {"status": "healthy", "dependencies": "ready"}
+    raise HTTPException(status_code=503, detail="Dependencies not initialized")
 
 
 @app.post("/analyze", response_model=AnalyzedVulnerability)
-async def analyze_vulnerability(request: AnalysisRequest) -> AnalyzedVulnerability:
-    """Analyze a vulnerability using the AI agent.
-
-    This endpoint accepts vulnerability analysis requests and returns comprehensive
-    analysis using the RAG-powered AI agent.
-    """
-    if agent_deps is None:
-        raise HTTPException(status_code=503, detail="Agent dependencies not initialized")
-
+async def analyze_vulnerability(
+    request: AnalysisRequest,
+    agent_deps=Depends(get_agent_dependencies)
+) -> AnalyzedVulnerability:
+    """Analyze a vulnerability using the AI agent."""
     # For now, handle single vulnerability ID analysis
     if not request.vulnerability_ids:
         raise HTTPException(status_code=400, detail="No vulnerability IDs provided")
@@ -114,15 +111,11 @@ async def analyze_vulnerability(request: AnalysisRequest) -> AnalyzedVulnerabili
 
 
 @app.post("/chat")
-async def chat_with_agent(message: str) -> dict:
-    """Chat interface for conversational vulnerability analysis.
-
-    This endpoint provides a more flexible chat interface where users can
-    have conversations with the vulnerability analysis agent.
-    """
-    if agent_deps is None:
-        raise HTTPException(status_code=503, detail="Agent dependencies not initialized")
-
+async def chat_with_agent(
+    message: str,
+    agent_deps=Depends(get_agent_dependencies)
+) -> dict:
+    """Chat interface for conversational vulnerability analysis."""
     if not message.strip():
         raise HTTPException(status_code=400, detail="Empty message provided")
 
@@ -141,6 +134,41 @@ async def chat_with_agent(message: str) -> dict:
     except Exception as e:
         logger.error(f"Failed to process chat message: {e}")
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+@app.post("/analyze-report", response_model=List[AnalyzedVulnerability])
+async def analyze_report(
+    report_content: str = Body(..., description="Raw scan report content"),
+    max_concurrent: int = Query(3, description="Maximum concurrent analyses", ge=1, le=10),
+    timeout_per_analysis: float = Query(30.0, description="Timeout per analysis in seconds", ge=5.0, le=120.0),
+    agent_deps=Depends(get_agent_dependencies)
+):
+    """Analyze a complete scan report and extract all vulnerability findings."""
+    logger.info("Scan report analysis endpoint called")
+
+    try:
+        # Try to parse as JSON if it looks like JSON
+        try:
+            if report_content.strip().startswith('{'):
+                report_data = json.loads(report_content)
+            else:
+                report_data = report_content
+        except json.JSONDecodeError:
+            report_data = report_content
+
+        orchestrator = VulnerabilityAnalysisOrchestrator(agent_deps)
+        results = await orchestrator.analyze_scan_report(
+            report_data,
+            max_concurrent=max_concurrent,
+            timeout_per_analysis=timeout_per_analysis
+        )
+
+        logger.info(f"Scan report analysis completed: {len(results)} vulnerabilities analyzed")
+        return results
+
+    except Exception as e:
+        logger.error(f"Scan report analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
